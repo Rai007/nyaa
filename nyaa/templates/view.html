@@ -136,7 +136,6 @@
 			Comments - {{ comment_count }}
 		</h3>
 	</div>
-	<form method="POST">
 	{% for comment in comments %}
 		<div class="panel panel-default">
 			<div class="panel-body" >
@@ -181,14 +180,15 @@
 		target.innerHTML = writer.render(parsed);
 		</script>
 	{% endfor %}
-	</form>
 </div>
 
-<form method="POST">
-	{{ form.csrf_token }}
-	{{ render_field(form.comment, class_='form-control') }}
-	<input type="submit" value="Submit" class="btn btn-primary">
-</form>
+{% if g.user %}
+	<form method="POST">
+		{{ form.csrf_token }}
+		{{ render_field(form.comment, class_='form-control') }}
+		<input type="submit" value="Submit" class="btn btn-primary">
+	</form>
+{% endif %}
 
 <script>
 	var target = document.getElementById('torrent-description');
