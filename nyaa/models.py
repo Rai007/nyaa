@@ -6,10 +6,14 @@ from sqlalchemy import func, ForeignKeyConstraint, Index
 from sqlalchemy_utils import ChoiceType, EmailType, PasswordType
 from werkzeug.security import generate_password_hash, check_password_hash
 from sqlalchemy_fulltext import FullText
+from ipaddress import ip_address
 
 import re
+import base64
 from markupsafe import escape as escape_markup
 from urllib.parse import unquote as unquote_url
+import urllib, hashlib
+import config
 
 if app.config['USE_MYSQL']:
     from sqlalchemy.dialects import mysql
@@ -60,6 +64,7 @@ class Torrent(db.Model):
     encoding = db.Column(db.String(length=32), nullable=False)
     flags = db.Column(db.Integer, default=0, nullable=False, index=True)
     uploader_id = db.Column(db.Integer, db.ForeignKey('users.id'), nullable=True)
+    uploader_ip = db.Column(db.Binary(length=16), default=None, nullable=True)
     has_torrent = db.Column(db.Boolean, nullable=False, default=False)
 
     created_time = db.Column(db.DateTime(timezone=False), default=datetime.utcnow, nullable=False)
@@ -88,10 +93,14 @@ class Torrent(db.Model):
                                    primaryjoin=(
                                        "and_(SubCategory.id == foreign(Torrent.sub_category_id), "
                                        "SubCategory.main_category_id == Torrent.main_category_id)"))
-    info = db.relationship('TorrentInfo', uselist=False, back_populates='torrent')
-    filelist = db.relationship('TorrentFilelist', uselist=False, back_populates='torrent')
-    stats = db.relationship('Statistic', uselist=False, back_populates='torrent', lazy='joined')
-    trackers = db.relationship('TorrentTrackers', uselist=True, lazy='joined')
+    info = db.relationship('TorrentInfo', uselist=False,
+                           cascade="all, delete-orphan", back_populates='torrent')
+    filelist = db.relationship('TorrentFilelist', uselist=False,
+                               cascade="all, delete-orphan", back_populates='torrent')
+    stats = db.relationship('Statistic', uselist=False,
+                            cascade="all, delete-orphan", back_populates='torrent', lazy='joined')
+    trackers = db.relationship('TorrentTrackers', uselist=True,
+                               cascade="all, delete-orphan", lazy='joined')
 
     def __repr__(self):
         return '<{0} #{1.id} \'{1.display_name}\' {1.filesize}b>'.format(type(self).__name__, self)
@@ -122,8 +131,21 @@ class Torrent(db.Model):
         return escape_markup(self.information)
 
     @property
+    def info_hash_as_b32(self):
+        return base64.b32encode(self.info_hash).decode('utf-8')
+
+    @property
+    def info_hash_as_hex(self):
+        return self.info_hash.hex()
+
+    @property
     def magnet_uri(self):
         return create_magnet(self)
+
+    @property
+    def uploader_ip_string(self):
+        if self.uploader_ip:
+            return str(ip_address(self.uploader_ip))
 
     @property
     def anonymous(self):
@@ -293,25 +315,20 @@ class SubCategory(db.Model):
         return '_'.join(str(x) for x in self.get_category_ids())
 
     @classmethod
-    def by_id(cls, id):
-        return cls.query.get(id)
-
-    @classmethod
     def by_category_ids(cls, main_cat_id, sub_cat_id):
-        return cls.query.filter(cls.id == sub_cat_id, cls.main_category_id == main_cat_id).first()
+        return cls.query.get((sub_cat_id, main_cat_id))
 
 
 class Comment(db.Model):
     __tablename__ = DB_TABLE_PREFIX + 'comments'
 
-    id = db.Column(db.Integer, primary_key=True)
+    id = db.Column(db.Integer, primary_key=True, autoincrement=True)
     torrent = db.Column(db.Integer, db.ForeignKey(
         DB_TABLE_PREFIX + 'torrents.id'), primary_key=True)
     user_id = db.Column(db.Integer, db.ForeignKey(
         'users.id', ondelete='CASCADE'))
     created_time = db.Column(db.DateTime(timezone=False), default=datetime.utcnow)
-    text = db.Column(db.String(length=255), nullable=False)
-
+    text = db.Column(DescriptionTextType(collation=COL_UTF8MB4_BIN), nullable=False)
     user = db.relationship('User', uselist=False, back_populates='comments')
 
     def __repr__(self):
@@ -326,7 +343,7 @@ class Comment(db.Model):
 class UserLevelType(IntEnum):
     REGULAR = 0
     TRUSTED = 1
-    ADMIN = 2
+    MODERATOR = 2
     SUPERADMIN = 3
 
 
@@ -366,6 +383,29 @@ class User(db.Model):
     def __repr__(self):
         return '<User %r>' % self.username
 
+    def validate_authorization(self, password):
+        ''' Returns a boolean for whether the user can be logged in '''
+        checks = [
+            # Password must match
+            password == self.password_hash,
+            # Reject inactive and banned users
+            self.status == UserStatusType.ACTIVE
+        ]
+        return all(checks)
+
+    def gravatar_url(self):
+        # from http://en.gravatar.com/site/implement/images/python/
+        size = 40
+        # construct the url
+        gravatar_url = 'https://www.gravatar.com/avatar/' + hashlib.md5(self.email.encode('utf-8').lower()).hexdigest() + '?'
+        gravatar_url += urllib.parse.urlencode({'d': config.DEFAULT_AVATAR_URL, 's': str(size)})
+        return gravatar_url
+
+    @property
+    def ip_string(self):
+        if self.last_login_ip:
+            return str(ip_address(self.last_login_ip))
+
     @classmethod
     def by_id(cls, id):
         return cls.query.get(id)
@@ -380,17 +420,30 @@ class User(db.Model):
         user = cls.query.filter_by(email=email).first()
         return user
 
+    @classmethod
+    def by_username_or_email(cls, username_or_email):
+        return cls.by_username(username_or_email) or cls.by_email(username_or_email)
+
     @property
-    def is_admin(self):
-        return self.level is UserLevelType.ADMIN or self.level is UserLevelType.SUPERADMIN
+    def is_moderator(self):
+        return self.level >= UserLevelType.MODERATOR
 
     @property
     def is_superadmin(self):
-        return self.level is UserLevelType.SUPERADMIN
+        return self.level == UserLevelType.SUPERADMIN
 
     @property
     def is_trusted(self):
-        return self.level is UserLevelType.TRUSTED
+        return self.level >= UserLevelType.TRUSTED
+
+    @property
+    def userlevel_str(self):
+        if self.level == UserLevelType.REGULAR:
+            return 'User'
+        elif self.level == UserLevelType.TRUSTED:
+            return 'Trusted'
+        elif self.level >= UserLevelType.MODERATOR:
+            return 'Moderator'
 
 
 # class Session(db.Model):

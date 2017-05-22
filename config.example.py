@@ -33,6 +33,9 @@ MAIL_FROM_ADDRESS = '***'
 SMTP_USERNAME = '***'
 SMTP_PASSWORD = '***'
 
+# Absolute path to default avatar for users with no gravatar.
+DEFAULT_AVATAR_URL = '***'
+
 # What the site identifies itself as.
 SITE_NAME = 'Nyaa'
 

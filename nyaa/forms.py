@@ -1,3 +1,4 @@
+import flask
 from nyaa import db, app
 from nyaa.models import User
 from nyaa import bencode, utils, models
@@ -6,14 +7,16 @@ import os
 import re
 from flask_wtf import FlaskForm
 from flask_wtf.file import FileField, FileRequired
-from wtforms import TextField, PasswordField, BooleanField, TextAreaField, SelectField
-from wtforms.validators import Required, Optional, Email, Length, EqualTo, ValidationError, Regexp
+from wtforms import StringField, PasswordField, BooleanField, TextAreaField, SelectField
+from wtforms.validators import DataRequired, Optional, Email, Length, EqualTo, ValidationError
+from wtforms.validators import Regexp
 
 # For DisabledSelectField
 from wtforms.widgets import Select as SelectWidget
 from wtforms.widgets import html_params, HTMLString
 
 from flask_wtf.recaptcha import RecaptchaField
+from flask_wtf.recaptcha.validators import Recaptcha as RecaptchaValidator
 
 
 class Unique(object):
@@ -39,27 +42,27 @@ _username_validator = Regexp(
 
 
 class LoginForm(FlaskForm):
-    username = TextField('Username or email address', [Required(), _username_validator])
-    password = PasswordField('Password', [Required()])
+    username = StringField('Username or email address', [DataRequired(), _username_validator])
+    password = PasswordField('Password', [DataRequired()])
 
 
 class RegisterForm(FlaskForm):
-    username = TextField('Username', [
-        Required(),
+    username = StringField('Username', [
+        DataRequired(),
         Length(min=3, max=32),
         _username_validator,
         Unique(User, User.username, 'Username not availiable')
     ])
 
-    email = TextField('Email address', [
+    email = StringField('Email address', [
         Email(),
-        Required(),
+        DataRequired(),
         Length(min=5, max=128),
         Unique(User, User.email, 'Email already in use by another account')
     ])
 
     password = PasswordField('Password', [
-        Required(),
+        DataRequired(),
         EqualTo('password_confirm', message='Passwords must match'),
         Length(min=6, max=1024,
                message='Password must be at least %(min)d characters long.')
@@ -72,14 +75,14 @@ class RegisterForm(FlaskForm):
 
 
 class ProfileForm(FlaskForm):
-    email = TextField('New Email Address', [
+    email = StringField('New Email Address', [
         Email(),
         Optional(),
         Length(min=5, max=128),
         Unique(User, User.email, 'This email address has been taken')
     ])
 
-    current_password = PasswordField('Current Password', [Required()])
+    current_password = PasswordField('Current Password', [DataRequired()])
 
     new_password = PasswordField('New Password', [
         Optional(),
@@ -126,14 +129,12 @@ class DisabledSelectField(SelectField):
 class CommentForm(FlaskForm):
     comment = TextAreaField('Make a comment', [
         Length(max=255, message='Comment must be at most %(max)d characters long.'),
-        Required()
+        DataRequired()
     ])
-
-    is_anonymous = BooleanField('Anonymous')
 
 
 class EditForm(FlaskForm):
-    display_name = TextField('Torrent display name', [
+    display_name = StringField('Torrent display name', [
         Length(min=3, max=255,
                message='Torrent display name must be at least %(min)d characters long '
                        'and %(max)d at most.')
@@ -161,8 +162,9 @@ class EditForm(FlaskForm):
     is_remake = BooleanField('Remake')
     is_anonymous = BooleanField('Anonymous')
     is_complete = BooleanField('Complete')
+    is_trusted = BooleanField('Trusted')
 
-    information = TextField('Information', [
+    information = StringField('Information', [
         Length(max=255, message='Information must be at most %(max)d characters long.')
     ])
     description = TextAreaField('Description (markdown supported)', [
@@ -171,20 +173,26 @@ class EditForm(FlaskForm):
 
 
 class UploadForm(FlaskForm):
-
-    class Meta:
-        csrf = False
-
     torrent_file = FileField('Torrent file', [
         FileRequired()
     ])
 
-    display_name = TextField('Torrent display name (optional)', [
+    display_name = StringField('Torrent display name (optional)', [
         Optional(),
         Length(min=3, max=255,
                message='Torrent display name must be at least %(min)d characters long and '
                        '%(max)d at most.')
     ])
+
+    if app.config['USE_RECAPTCHA']:
+        # Captcha only for not logged in users
+        _recaptcha_validator = RecaptchaValidator()
+
+        def _validate_recaptcha(form, field):
+            if not flask.g.user:
+                return UploadForm._recaptcha_validator(form, field)
+
+        recaptcha = RecaptchaField(validators=[_validate_recaptcha])
 
     # category = SelectField('Category')
     category = DisabledSelectField('Category')
@@ -208,8 +216,9 @@ class UploadForm(FlaskForm):
     is_remake = BooleanField('Remake')
     is_anonymous = BooleanField('Anonymous')
     is_complete = BooleanField('Complete')
+    is_trusted = BooleanField('Trusted')
 
-    information = TextField('Information', [
+    information = StringField('Information', [
         Length(max=255, message='Information must be at most %(max)d characters long.')
     ])
     description = TextAreaField('Description (markdown supported)', [
@@ -269,7 +278,7 @@ class UploadForm(FlaskForm):
 
 
 class UserForm(FlaskForm):
-    user_class = DisabledSelectField('Change User Class')
+    user_class = SelectField('Change User Class')
 
     def validate_user_class(form, field):
         if not field.data:
@@ -288,7 +297,7 @@ class TorrentFileData(object):
 
 def _validate_trackers(torrent_dict, tracker_to_check_for=None):
     announce = torrent_dict.get('announce')
-    announce_string = _validate_bytes(announce, 'announce', 'utf-8')
+    announce_string = _validate_bytes(announce, 'announce', test_decode='utf-8')
 
     tracker_found = tracker_to_check_for and (
         announce_string.lower() == tracker_to_check_for.lower()) or False
@@ -300,7 +309,8 @@ def _validate_trackers(torrent_dict, tracker_to_check_for=None):
         for announce in announce_list:
             _validate_list(announce, 'announce-list item')
 
-            announce_string = _validate_bytes(announce[0], 'announce-list item url', 'utf-8')
+            announce_string = _validate_bytes(
+                announce[0], 'announce-list item url', test_decode='utf-8')
             if tracker_to_check_for and announce_string.lower() == tracker_to_check_for.lower():
                 tracker_found = True
 
@@ -316,7 +326,7 @@ def _validate_torrent_metadata(torrent_dict):
     assert isinstance(info_dict, dict), 'info is not a dict'
 
     encoding_bytes = torrent_dict.get('encoding', b'utf-8')
-    encoding = _validate_bytes(encoding_bytes, 'encoding', 'utf-8').lower()
+    encoding = _validate_bytes(encoding_bytes, 'encoding', test_decode='utf-8').lower()
 
     name = info_dict.get('name')
     _validate_bytes(name, 'name', test_decode=encoding)
@@ -338,17 +348,21 @@ def _validate_torrent_metadata(torrent_dict):
 
             path_list = file_dict.get('path')
             _validate_list(path_list, 'path')
-            for path_part in path_list:
+            # Validate possible directory names
+            for path_part in path_list[:-1]:
                 _validate_bytes(path_part, 'path part', test_decode=encoding)
+            # Validate actual filename, allow b'' to specify an empty directory
+            _validate_bytes(path_list[-1], 'filename', check_empty=False, test_decode=encoding)
 
     else:
         length = info_dict.get('length')
         _validate_number(length, 'length', check_positive=True)
 
 
-def _validate_bytes(value, name='value', test_decode=None):
+def _validate_bytes(value, name='value', check_empty=True, test_decode=None):
     assert isinstance(value, bytes), name + ' is not bytes'
-    assert len(value) > 0, name + ' is empty'
+    if check_empty:
+        assert len(value) > 0, name + ' is empty'
     if test_decode:
         try:
             return value.decode(test_decode)

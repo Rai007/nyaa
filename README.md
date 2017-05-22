@@ -18,7 +18,7 @@
 - `pyenv activate nyaa`
 - Install dependencies with `pip install -r requirements.txt`
 - Copy `config.example.py` into `config.py`
-- Change TALBE_PREFIX to `nyaa_` or `sukebei_` depending on the site
+- Change TABLE_PREFIX to `nyaa_` or `sukebei_` depending on the site
 
 ## Setting up MySQL/MariaDB database for advanced functionality
 - Enable `USE_MYSQL` flag in config.py
@@ -64,7 +64,7 @@
 
 ## Setting up ES
 - Run `./create_es.sh` and this creates two indicies: `nyaa` and `sukebei`
-- The output should show `akncolwedged: true` twice
+- The output should show `acknowledged: true` twice
 - The safest bet is to disable the webapp here to ensure there's no database writes
 - Run `python import_to_es.py` with `SITE_FLAVOR` set to `nyaa`
 - Run `python import_to_es.py` with `SITE_FLAVOR` set to `sukebei`
@@ -77,6 +77,12 @@
 - Copy the output to `/var/lib/sync_es_position.json` with the contents `{"log_file": "FILE", "log_pos": POSITION}` and replace FILENAME with File (something like master1-bin.000002) in the SQL output and POSITION (something like 892528513) with Position
 - Set up `sync_es.py` as a service and run it, preferably as the system/root
 - Make sure `sync_es.py` runs within venv with the right dependencies
+
+## Database migrations
+- Uses [flask-Migrate](https://flask-migrate.readthedocs.io/)
+- Run `./db_migrate.py db migrate` to generate the migration script after database model changes.
+- Take a look at the result in `migrations/versions/...` to make sure nothing went wrong.
+- Run `./db_migrate.py db upgrade` to upgrade your database.
 
 ## Good to go!
 - After that, enable the `USE_ELASTIC_SEARCH` flag and restart the webapp and you're good to go

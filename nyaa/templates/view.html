@@ -6,7 +6,7 @@
 	<div class="panel-heading"{% if torrent.hidden %} style="background-color: darkgray;"{% endif %}>
 		<h3 class="panel-title">
 			{% if can_edit %}
-			<a href="{{ request.url }}/edit"><i class="fa fa-fw fa-pencil"></i></a>
+			<a href="{{ request.url }}/edit" title="Edit torrent"><i class="fa fa-fw fa-pencil"></i></a>
 			{% endif %}
 			{{ torrent.display_name }}
 		</h3>
@@ -24,7 +24,17 @@
 
 		<div class="row">
 			<div class="col-md-1">Submitter:</div>
-			<div class="col-md-5">{% if not torrent.anonymous and torrent.user %}<a href="{{ url_for('view_user', user_name=torrent.user.username) }}">{{ torrent.user.username }}</a>{% else %}Anonymous{% endif %}</div>
+			<div class="col-md-5">
+			{% set user_url = torrent.user and url_for('view_user', user_name=torrent.user.username) %}
+			{%- if not torrent.anonymous and torrent.user -%}
+			<a href="{{ user_url }}">{{ torrent.user.username }}</a>
+			{%- else -%}
+			Anonymous {% if torrent.user and (viewer == torrent.user or viewer.is_moderator) %}(<a href="{{ user_url }}">{{ torrent.user.username }}</a>){% endif %}
+			{%- endif -%}
+			{%- if viewer and viewer.is_superadmin and torrent.uploader_ip -%}
+			({{ torrent.uploader_ip_string }})
+			{%- endif -%}
+			</div>
 
 			<div class="col-md-1">Seeders:</div>
 			<div class="col-md-5"><span style="color: green;">{% if config.ENABLE_SHOW_STATS %}{{ torrent.stats.seed_count }}{% else %}Coming soon{% endif %}</span></div>
@@ -126,46 +136,57 @@
 			Comments - {{ comment_count }}
 		</h3>
 	</div>
-	<div class="panel-collapse">
-        <table class="table table-bordered table-striped">
-            <thead>
-				{% if g.user.is_admin %}
-				<th style="width:auto;">Delete</th>
-				{% endif %}
-				<th style="width:auto;">Date</th>
-                <th style="width:auto;">User</th>
-                <th style="width:100%;">Comment</th>
-            </thead>
-            <tbody>
-				{% for comment in comments %}
-				<tr>
-					{% if g.user.is_admin %}
-					<td class="col-md-1">
-						<a href="{{ url_for('delete_comment', torrent_id=torrent.id, comment_id=comment.id )}}"><i class="fa fa-ban"></i></a>
-					</td>
-					{% endif %}
-					<td class="col-md-1">
-						{% if comment.user %}
-						<a href="{{ url_for('view_user', user_name=comment.user.username) }}">
-							{{ comment.user.username }}
-						</a>
-						{% else %}
-						<span>Anonymous</span>
+	<form method="POST">
+	{% for comment in comments %}
+		<div class="panel panel-default">
+			<div class="panel-body" >
+				<div class="row">
+					<div class="col-md-2">
+						<p>
+							{% set user_url = torrent.user and url_for('view_user', user_name=comment.user.username) %}
+							<a href="{{ user_url }}">{{ comment.user.username }}</a>
+							{% if comment.user.id == torrent.uploader_id and not torrent.anonymous %}
+							(uploader)
+							{% endif %}
+						</p>
+						<p>{{ comment.user.userlevel_str }}</p>
+						<p>
+							<img style="max-width: 120px;" src="{{ comment.user.gravatar_url() }}">
+						</p>
+						{% if g.user.is_moderator or g.user.id == comment.user_id %}
+						<div class="row form-group">
+							<div class="col-md-6">
+						<label class="btn btn-default" title="Delete">
+							<a href="{{ url_for('delete_comment', comment_id=comment.id, torrent_id=torrent.id)}}">Delete</a>
+						</label>
+							</div>
+						</div>
 						{% endif %}
-					</td>
-					<td class="col-md-1" data-timestamp="{{ torrent.created_utc_timestamp|int }}">{{ torrent.created_time.strftime('%Y-%m-%d %H:%M UTC') }}</td>
-					<td class="col-md-9">{{ comment.text }}</td>
-				</tr>
-				{% endfor %}
-            <tbody>
-        </table>
-	</div>
+
+					</div>
+					<div class="col-md-10">
+						<small>{{comment.created_time | timesince}}</small><br><br>
+						{# Escape newlines into html entities because CF strips blank newlines #}
+						<div id="torrent-comment{{ comment.id }}">{{ comment.text }}</div>
+					</div>
+				</div>
+			</div>
+		</div>
+		<script>
+		var target = document.getElementById('torrent-comment{{ comment.id }}');
+		var text = target.innerHTML;
+		var reader = new commonmark.Parser({safe: true});
+		var writer = new commonmark.HtmlRenderer({safe: true, softbreak: '<br />'});
+		var parsed = reader.parse(text.trim());
+		target.innerHTML = writer.render(parsed);
+		</script>
+	{% endfor %}
+	</form>
 </div>
 
-<form method="POST" action="{{ request.url }}/submit_comment">
+<form method="POST">
 	{{ form.csrf_token }}
 	{{ render_field(form.comment, class_='form-control') }}
-	{{ render_field(form.is_anonymous) }}
 	<input type="submit" value="Submit" class="btn btn-primary">
 </form>
 
